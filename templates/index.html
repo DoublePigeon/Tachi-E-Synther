@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>立绘表情合成工具</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f4f9; padding: 20px; display: flex; height: 95vh; box-sizing: border-box; }
+        
+        .controls { width: 350px; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); overflow-y: auto; margin-right: 20px; display: flex; flex-direction: column; gap: 15px; }
+        .preview-area { flex-grow: 1; background: #e0e0e0; border-radius: 8px; display: flex; align-items: center; justify-content: center; overflow: hidden; border: 2px dashed #ccc; position: relative; }
+        
+        h2 { margin-top: 0; color: #333; font-size: 1.2rem; }
+        label { font-weight: bold; font-size: 0.9rem; color: #555; display: block; margin-bottom: 5px; }
+        
+        /* 样式优化：文件上传行 */
+        .file-row { display: flex; gap: 5px; }
+        input[type="file"] { flex-grow: 1; padding: 6px; border: 1px solid #ddd; border-radius: 4px; font-size: 0.9em; }
+        
+        /* 清除按钮样式 */
+        .btn-clear { background-color: #ff6b6b; color: white; border: none; border-radius: 4px; padding: 0 10px; cursor: pointer; font-weight: bold; }
+        .btn-clear:hover { background-color: #fa5252; }
+
+        input[type="text"], select { width: 100%; padding: 8px; margin-bottom: 5px; border: 1px solid #ddd; border-radius: 4px; box-sizing: border-box; }
+        
+        .slider-wrapper { margin-bottom: 10px; }
+        .slider-group { display: flex; align-items: center; gap: 10px; }
+        .slider-label { width: 20px; font-weight: bold; }
+        input[type="range"] { flex-grow: 1; cursor: pointer; }
+        .num-input { width: 70px !important; text-align: right; margin-bottom: 0 !important; font-family: monospace; }
+
+        .btn { padding: 10px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; width: 100%; transition: background 0.2s; }
+        .btn-primary { background-color: #007bff; color: white; margin-top: 10px; }
+        .btn-primary:hover { background-color: #0056b3; }
+        .btn-secondary { background-color: #6c757d; color: white; margin-bottom: 5px; }
+        .btn-secondary:hover { background-color: #545b62; }
+        
+        .preset-box { border-top: 1px solid #eee; padding-top: 15px; margin-top: 10px; }
+        
+        #canvas { max-width: 100%; max-height: 100%; box-shadow: 0 0 20px rgba(0,0,0,0.2); background-image: linear-gradient(45deg, #ccc 25%, transparent 25%), linear-gradient(-45deg, #ccc 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #ccc 75%), linear-gradient(-45deg, transparent 75%, #ccc 75%); background-size: 20px 20px; background-position: 0 0, 0 10px, 10px -10px, -10px 0px; }
+    </style>
+</head>
+<body>
+
+    <div class="controls">
+        <h2>配置面板</h2>
+        
+        <!-- 1. 人物上传 + 清除 -->
+        <div>
+            <label>1. 人物立绘 (底图)</label>
+            <div class="file-row">
+                <input type="file" id="bodyInput" accept="image/*">
+                <button class="btn-clear" onclick="clearFile('body')" title="清除">×</button>
+            </div>
+        </div>
+
+        <!-- 2. 表情上传 + 清除 -->
+        <div>
+            <label>2. 表情图片 (顶层, 可多选)</label>
+            <div class="file-row">
+                <input type="file" id="exprInput" accept="image/*" multiple>
+                <button class="btn-clear" onclick="clearFile('expr')" title="清除">×</button>
+            </div>
+            <small style="color: #666; font-size: 0.8em;">预览仅显示第一张选中的表情</small>
+        </div>
+
+        <div>
+            <label>位置调整 (像素 px)</label>
+            <div class="slider-wrapper">
+                <div class="slider-group">
+                    <span class="slider-label">X</span>
+                    <input type="range" id="xRange" min="-500" max="500" value="0">
+                    <input type="number" id="xInput" class="num-input" value="0">
+                </div>
+            </div>
+            <div class="slider-wrapper">
+                <div class="slider-group">
+                    <span class="slider-label">Y</span>
+                    <input type="range" id="yRange" min="-500" max="500" value="0">
+                    <input type="number" id="yInput" class="num-input" value="0">
+                </div>
+            </div>
+        </div>
+
+        <div class="preset-box">
+            <label>预设管理</label>
+            <select id="presetSelect">
+                <option value="">-- 选择预设 --</option>
+            </select>
+            <div style="display: flex; gap: 5px; margin-top: 5px;">
+                <input type="text" id="presetName" placeholder="新预设名称">
+                <button class="btn btn-secondary" style="width: auto;" onclick="savePreset()">保存</button>
+            </div>
+            <div style="display: flex; gap: 5px; margin-top: 5px;">
+                <button class="btn btn-secondary" onclick="exportPresets()">导出</button>
+                <button class="btn btn-secondary" onclick="document.getElementById('jsonInput').click()">导入</button>
+                <input type="file" id="jsonInput" accept=".json" style="display: none;" onchange="importPresets(this)">
+            </div>
+        </div>
+
+        <div style="margin-top: auto; border-top: 2px solid #eee; padding-top: 15px;">
+            <label>3. 输出路径</label>
+            <input type="text" id="outputPath" placeholder="例如 D:\Output">
+            <button class="btn btn-primary" id="synthBtn" onclick="synthesize()">批量合成并导出</button>
+            <div id="statusMsg" style="margin-top: 10px; font-size: 0.9em; color: #333;"></div>
+        </div>
+    </div>
+
+    <div class="preview-area">
+        <canvas id="canvas"></canvas>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        
+        let bodyImg = new Image();
+        let exprImg = new Image();
+        let bodyLoaded = false;
+        let exprLoaded = false;
+
+        // 状态变量
+        let posX = 0;
+        let posY = 0;
+        let presets = [];
+
+        const xRange = document.getElementById('xRange');
+        const yRange = document.getElementById('yRange');
+        const xInput = document.getElementById('xInput');
+        const yInput = document.getElementById('yInput');
+
+        // --- 事件监听器 ---
+        document.getElementById('bodyInput').addEventListener('change', (e) => loadImg(e, 'body'));
+        document.getElementById('exprInput').addEventListener('change', (e) => loadImg(e, 'expr'));
+        document.getElementById('presetSelect').addEventListener('change', applyPreset);
+
+        // 双向绑定逻辑
+        [xRange, yRange, xInput, yInput].forEach(el => {
+            el.addEventListener('input', (e) => {
+                // 如果是滑块动的，更新输入框；如果是输入框动的，更新滑块
+                if(e.target === xRange) xInput.value = xRange.value;
+                if(e.target === xInput) xRange.value = xInput.value;
+                if(e.target === yRange) yInput.value = yRange.value;
+                if(e.target === yInput) yRange.value = yInput.value;
+                
+                updateGlobalPos();
+            });
+        });
+
+        function updateGlobalPos() {
+            posX = parseInt(xInput.value) || 0;
+            posY = parseInt(yInput.value) || 0;
+            draw();
+        }
+
+        function setUIValues(x, y) {
+            xRange.value = x; xInput.value = x;
+            yRange.value = y; yInput.value = y;
+            updateGlobalPos();
+        }
+
+        // --- 清除文件功能 ---
+        function clearFile(type) {
+            if (type === 'body') {
+                document.getElementById('bodyInput').value = ''; // 清空 Input
+                bodyLoaded = false;
+                bodyImg = new Image(); // 重置 Image 对象
+                // 清空画布
+                canvas.width = 0; 
+                canvas.height = 0;
+                draw();
+            } else if (type === 'expr') {
+                document.getElementById('exprInput').value = ''; // 清空 Input
+                exprLoaded = false;
+                exprImg = new Image(); // 重置 Image 对象
+                draw();
+            }
+        }
+
+        function loadImg(e, type) {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = (event) => {
+                if (type === 'body') {
+                    bodyImg.onload = () => {
+                        bodyLoaded = true;
+                        canvas.width = bodyImg.width;
+                        canvas.height = bodyImg.height;
+                        const maxRange = Math.max(bodyImg.width, bodyImg.height);
+                        xRange.min = -maxRange; xRange.max = maxRange;
+                        yRange.min = -maxRange; yRange.max = maxRange;
+                        draw();
+                    }
+                    bodyImg.src = event.target.result;
+                } else {
+                    exprImg.onload = () => {
+                        exprLoaded = true;
+                        draw();
+                    }
+                    exprImg.src = event.target.result;
+                }
+            };
+            reader.readAsDataURL(file);
+        }
+
+        function draw() {
+            // 每次绘制前先清空
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            if (bodyLoaded) {
+                ctx.drawImage(bodyImg, 0, 0);
+            }
+            if (bodyLoaded && exprLoaded) {
+                ctx.drawImage(exprImg, posX, posY);
+            }
+        }
+
+        // --- 预设逻辑 ---
+        function savePreset() {
+            const name = document.getElementById('presetName').value;
+            if (!name) { alert('请输入预设名称'); return; }
+            presets.push({ name: name, x: posX, y: posY });
+            updatePresetDropdown();
+            document.getElementById('presetName').value = '';
+        }
+
+        function updatePresetDropdown() {
+            const select = document.getElementById('presetSelect');
+            select.innerHTML = '<option value="">-- 选择预设 --</option>';
+            presets.forEach((p, index) => {
+                const opt = document.createElement('option');
+                opt.value = index;
+                opt.textContent = p.name;
+                select.appendChild(opt);
+            });
+        }
+
+        function applyPreset() {
+            const index = document.getElementById('presetSelect').value;
+            if (index === "") return;
+            setUIValues(presets[index].x, presets[index].y);
+        }
+
+        function exportPresets() {
+            const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(presets));
+            const downloadAnchorNode = document.createElement('a');
+            downloadAnchorNode.setAttribute("href", dataStr);
+            downloadAnchorNode.setAttribute("download", "presets.json");
+            document.body.appendChild(downloadAnchorNode);
+            downloadAnchorNode.click();
+            downloadAnchorNode.remove();
+        }
+
+        function importPresets(input) {
+            const file = input.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                try {
+                    const loaded = JSON.parse(e.target.result);
+                    if (Array.isArray(loaded)) {
+                        presets = loaded;
+                        updatePresetDropdown();
+                        alert('加载成功');
+                    }
+                } catch (err) { alert('文件格式错误'); }
+            };
+            reader.readAsText(file);
+        }
+
+        // --- 合成导出 ---
+        async function synthesize() {
+            const outputDir = document.getElementById('outputPath').value;
+            const bodyFile = document.getElementById('bodyInput').files[0];
+            const exprFiles = document.getElementById('exprInput').files;
+
+            if (!outputDir) { alert('请输入输出路径'); return; }
+            if (!bodyFile) { alert('请加载人物图片'); return; }
+            
+            if (exprFiles.length === 0) { alert('请加载表情图片'); return; }
+
+            const btn = document.getElementById('synthBtn');
+            const msg = document.getElementById('statusMsg');
+            
+            btn.disabled = true;
+            btn.textContent = '处理中...';
+            msg.textContent = '上传处理中...';
+
+            const formData = new FormData();
+            formData.append('output_path', outputDir);
+            formData.append('x', posX);
+            formData.append('y', posY);
+            formData.append('body_image', bodyFile);
+            
+            for (let i = 0; i < exprFiles.length; i++) {
+                formData.append('expression_images', exprFiles[i]);
+            }
+
+            try {
+                const response = await fetch('/synthesize', { method: 'POST', body: formData });
+                const result = await response.json();
+                
+                if (result.status === 'success') {
+                    msg.style.color = 'green';
+                    msg.textContent = result.message;
+                } else {
+                    msg.style.color = 'red';
+                    msg.textContent = '错误: ' + result.message;
+                }
+            } catch (error) {
+                msg.style.color = 'red';
+                msg.textContent = '网络错误: ' + error;
+            } finally {
+                btn.disabled = false;
+                btn.textContent = '批量合成并导出';
+            }
+        }
+    </script>
+</body>
+</html>
