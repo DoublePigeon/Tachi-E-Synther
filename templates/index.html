@@ -7,17 +7,16 @@
     <style>
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f4f9; padding: 20px; display: flex; height: 95vh; box-sizing: border-box; }
         
-        .controls { width: 350px; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); overflow-y: auto; margin-right: 20px; display: flex; flex-direction: column; gap: 15px; }
-        .preview-area { flex-grow: 1; background: #e0e0e0; border-radius: 8px; display: flex; align-items: center; justify-content: center; overflow: hidden; border: 2px dashed #ccc; position: relative; }
+        .controls { width: 350px; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); overflow-y: auto; margin-right: 20px; display: flex; flex-direction: column; gap: 15px; z-index: 10; }
+        
+        /* 预览区样式调整 */
+        .preview-area { flex-grow: 1; background: #333; /*以此深色背景区分画布边界*/ border-radius: 8px; overflow: hidden; position: relative; display: flex; align-items: center; justify-content: center; }
         
         h2 { margin-top: 0; color: #333; font-size: 1.2rem; }
         label { font-weight: bold; font-size: 0.9rem; color: #555; display: block; margin-bottom: 5px; }
         
-        /* 样式优化：文件上传行 */
         .file-row { display: flex; gap: 5px; }
         input[type="file"] { flex-grow: 1; padding: 6px; border: 1px solid #ddd; border-radius: 4px; font-size: 0.9em; }
-        
-        /* 清除按钮样式 */
         .btn-clear { background-color: #ff6b6b; color: white; border: none; border-radius: 4px; padding: 0 10px; cursor: pointer; font-weight: bold; }
         .btn-clear:hover { background-color: #fa5252; }
 
@@ -37,7 +36,32 @@
         
         .preset-box { border-top: 1px solid #eee; padding-top: 15px; margin-top: 10px; }
         
-        #canvas { max-width: 100%; max-height: 100%; box-shadow: 0 0 20px rgba(0,0,0,0.2); background-image: linear-gradient(45deg, #ccc 25%, transparent 25%), linear-gradient(-45deg, #ccc 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #ccc 75%), linear-gradient(-45deg, transparent 75%, #ccc 75%); background-size: 20px 20px; background-position: 0 0, 0 10px, 10px -10px, -10px 0px; }
+        /* 画布样式：取消最大宽高限制，由JS控制，增加光标 */
+        #canvas { 
+            box-shadow: 0 0 20px rgba(0,0,0,0.5); 
+            background-image: linear-gradient(45deg, #ccc 25%, transparent 25%), linear-gradient(-45deg, #ccc 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #ccc 75%), linear-gradient(-45deg, transparent 75%, #ccc 75%); 
+            background-size: 20px 20px; 
+            background-position: 0 0, 0 10px, 10px -10px, -10px 0px; 
+            background-color: white;
+            cursor: grab; /* 默认显示手型 */
+        }
+        #canvas:active { cursor: grabbing; /* 拖拽时显示抓紧手型 */ }
+
+        /* 重置视图按钮 */
+        .reset-view-btn {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: rgba(255, 255, 255, 0.8);
+            border: 1px solid #ccc;
+            padding: 5px 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.8em;
+            z-index: 5;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+        }
+        .reset-view-btn:hover { background: white; }
     </style>
 </head>
 <body>
@@ -45,7 +69,6 @@
     <div class="controls">
         <h2>配置面板</h2>
         
-        <!-- 1. 人物上传 + 清除 -->
         <div>
             <label>1. 人物立绘 (底图)</label>
             <div class="file-row">
@@ -54,7 +77,6 @@
             </div>
         </div>
 
-        <!-- 2. 表情上传 + 清除 -->
         <div>
             <label>2. 表情图片 (顶层, 可多选)</label>
             <div class="file-row">
@@ -106,46 +128,147 @@
         </div>
     </div>
 
-    <div class="preview-area">
+    <div class="preview-area" id="previewArea">
+        <button class="reset-view-btn" onclick="resetView()">重置视图 (Fit)</button>
         <canvas id="canvas"></canvas>
     </div>
 
     <script>
         const canvas = document.getElementById('canvas');
         const ctx = canvas.getContext('2d');
+        const previewArea = document.getElementById('previewArea');
         
         let bodyImg = new Image();
         let exprImg = new Image();
         let bodyLoaded = false;
         let exprLoaded = false;
 
-        // 状态变量
+        // 图片合成坐标
         let posX = 0;
         let posY = 0;
         let presets = [];
+
+        // 视口变换变量 (Pan & Zoom)
+        let viewScale = 1;
+        let viewX = 0;
+        let viewY = 0;
+        let isDragging = false;
+        let startDragX = 0;
+        let startDragY = 0;
 
         const xRange = document.getElementById('xRange');
         const yRange = document.getElementById('yRange');
         const xInput = document.getElementById('xInput');
         const yInput = document.getElementById('yInput');
 
+        // --- 初始化画布大小 ---
+        // 初始给一个固定大小，加载图片后会改变
+        canvas.width = 800;
+        canvas.height = 600;
+
         // --- 事件监听器 ---
         document.getElementById('bodyInput').addEventListener('change', (e) => loadImg(e, 'body'));
         document.getElementById('exprInput').addEventListener('change', (e) => loadImg(e, 'expr'));
         document.getElementById('presetSelect').addEventListener('change', applyPreset);
 
-        // 双向绑定逻辑
+        // UI 双向绑定
         [xRange, yRange, xInput, yInput].forEach(el => {
             el.addEventListener('input', (e) => {
-                // 如果是滑块动的，更新输入框；如果是输入框动的，更新滑块
                 if(e.target === xRange) xInput.value = xRange.value;
                 if(e.target === xInput) xRange.value = xInput.value;
                 if(e.target === yRange) yInput.value = yRange.value;
                 if(e.target === yInput) yRange.value = yInput.value;
-                
                 updateGlobalPos();
             });
         });
+
+        // ==========================================
+        //  Canvas 拖拽与缩放逻辑 (核心修改)
+        // ==========================================
+
+        // 1. 鼠标滚轮缩放
+        canvas.addEventListener('wheel', (e) => {
+            e.preventDefault(); // 阻止页面滚动
+
+            const zoomIntensity = 0.1;
+            const wheel = e.deltaY < 0 ? 1 : -1;
+            const zoomFactor = Math.exp(wheel * zoomIntensity);
+
+            // 计算鼠标在 Canvas 内部的坐标
+            const rect = canvas.getBoundingClientRect();
+            const mouseX = e.clientX - rect.left;
+            const mouseY = e.clientY - rect.top;
+
+            // 计算缩放前的世界坐标 (鼠标指向的图片上的点)
+            const worldX = (mouseX - viewX) / viewScale;
+            const worldY = (mouseY - viewY) / viewScale;
+
+            // 应用缩放
+            viewScale *= zoomFactor;
+
+            // 修正 viewX/Y，使得鼠标指向的点位置不变 (Zoom to mouse)
+            viewX = mouseX - worldX * viewScale;
+            viewY = mouseY - worldY * viewScale;
+
+            draw();
+        });
+
+        // 2. 鼠标拖拽平移
+        canvas.addEventListener('mousedown', (e) => {
+            isDragging = true;
+            startDragX = e.clientX;
+            startDragY = e.clientY;
+        });
+
+        window.addEventListener('mousemove', (e) => {
+            if (isDragging) {
+                const dx = e.clientX - startDragX;
+                const dy = e.clientY - startDragY;
+                
+                viewX += dx;
+                viewY += dy;
+                
+                startDragX = e.clientX;
+                startDragY = e.clientY;
+                
+                draw();
+            }
+        });
+
+        window.addEventListener('mouseup', () => {
+            isDragging = false;
+        });
+
+        // 3. 重置视图
+        function resetView() {
+            if (!bodyLoaded) return;
+            
+            // 计算自适应缩放比例 (Fit)
+            const areaWidth = previewArea.clientWidth;
+            const areaHeight = previewArea.clientHeight;
+            
+            // 留一点边距
+            const padding = 40;
+            const availW = areaWidth - padding;
+            const availH = areaHeight - padding;
+
+            const scaleW = availW / bodyImg.width;
+            const scaleH = availH / bodyImg.height;
+            
+            // 选择较小的缩放比例以完全容纳
+            viewScale = Math.min(scaleW, scaleH, 1); // 这里的1表示如果不超大，就不放大了，保持原样，可删去1以强行填满
+
+            // 居中
+            viewX = (areaWidth - bodyImg.width * viewScale) / 2;
+            viewY = (areaHeight - bodyImg.height * viewScale) / 2;
+
+            draw();
+        }
+
+
+        // ==========================================
+        //  常规逻辑
+        // ==========================================
 
         function updateGlobalPos() {
             posX = parseInt(xInput.value) || 0;
@@ -159,20 +282,16 @@
             updateGlobalPos();
         }
 
-        // --- 清除文件功能 ---
         function clearFile(type) {
             if (type === 'body') {
-                document.getElementById('bodyInput').value = ''; // 清空 Input
+                document.getElementById('bodyInput').value = '';
                 bodyLoaded = false;
-                bodyImg = new Image(); // 重置 Image 对象
-                // 清空画布
-                canvas.width = 0; 
-                canvas.height = 0;
+                bodyImg = new Image();
                 draw();
             } else if (type === 'expr') {
-                document.getElementById('exprInput').value = ''; // 清空 Input
+                document.getElementById('exprInput').value = '';
                 exprLoaded = false;
-                exprImg = new Image(); // 重置 Image 对象
+                exprImg = new Image();
                 draw();
             }
         }
@@ -186,12 +305,18 @@
                 if (type === 'body') {
                     bodyImg.onload = () => {
                         bodyLoaded = true;
-                        canvas.width = bodyImg.width;
-                        canvas.height = bodyImg.height;
+                        // 此时 Canvas 逻辑尺寸设为图片真实尺寸，但 CSS 可能会缩放它
+                        // 但为了清晰度，通常 Canvas 尺寸 = 图片尺寸，或者 Viewport 尺寸
+                        // 这里我们让 Canvas 尺寸等于 Viewport 尺寸，以此实现无限画布
+                        resizeCanvasToWindow();
+                        
+                        // 加载新底图时重置视图
+                        resetView();
+
+                        // 更新滑块范围
                         const maxRange = Math.max(bodyImg.width, bodyImg.height);
                         xRange.min = -maxRange; xRange.max = maxRange;
                         yRange.min = -maxRange; yRange.max = maxRange;
-                        draw();
                     }
                     bodyImg.src = event.target.result;
                 } else {
@@ -205,19 +330,43 @@
             reader.readAsDataURL(file);
         }
 
+        // 调整 Canvas 分辨率以匹配显示区域（保证清晰度）
+        function resizeCanvasToWindow() {
+            canvas.width = previewArea.clientWidth;
+            canvas.height = previewArea.clientHeight;
+            draw();
+        }
+        window.addEventListener('resize', resizeCanvasToWindow);
+
         function draw() {
-            // 每次绘制前先清空
+            // 清空整个画布（物理像素）
+            // 注意：clearRect 是受 setTransform 影响的，所以先重置矩阵
+            ctx.setTransform(1, 0, 0, 1, 0, 0);
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             
-            if (bodyLoaded) {
-                ctx.drawImage(bodyImg, 0, 0);
-            }
-            if (bodyLoaded && exprLoaded) {
+            if (!bodyLoaded) return;
+
+            // --- 关键：应用视图变换矩阵 ---
+            // 所有的后续绘制都会基于这个缩放和平移
+            ctx.setTransform(viewScale, 0, 0, viewScale, viewX, viewY);
+
+            // 1. 绘制人物
+            ctx.drawImage(bodyImg, 0, 0);
+
+            // 2. 绘制表情
+            if (exprLoaded) {
                 ctx.drawImage(exprImg, posX, posY);
+            }
+            
+            // (可选) 绘制表情边框，方便在极小像素时看到位置
+            if (exprLoaded) {
+                ctx.strokeStyle = "rgba(0, 255, 0, 0.5)";
+                ctx.lineWidth = 1 / viewScale; // 保持线宽为1像素，不随缩放变粗
+                ctx.strokeRect(posX, posY, exprImg.width, exprImg.height);
             }
         }
 
-        // --- 预设逻辑 ---
+        // --- 预设与合成逻辑 (保持不变) ---
         function savePreset() {
             const name = document.getElementById('presetName').value;
             if (!name) { alert('请输入预设名称'); return; }
@@ -270,7 +419,6 @@
             reader.readAsText(file);
         }
 
-        // --- 合成导出 ---
         async function synthesize() {
             const outputDir = document.getElementById('outputPath').value;
             const bodyFile = document.getElementById('bodyInput').files[0];
@@ -278,7 +426,6 @@
 
             if (!outputDir) { alert('请输入输出路径'); return; }
             if (!bodyFile) { alert('请加载人物图片'); return; }
-            
             if (exprFiles.length === 0) { alert('请加载表情图片'); return; }
 
             const btn = document.getElementById('synthBtn');
@@ -317,6 +464,9 @@
                 btn.textContent = '批量合成并导出';
             }
         }
+        
+        // 初始化时设置一次画布
+        resizeCanvasToWindow();
     </script>
 </body>
 </html>
