@@ -1,8 +1,65 @@
 import os
+import json
 from flask import Flask, render_template, request, jsonify
-from PIL import Image
+from PIL import Image, ImageDraw, ImageChops
 
 app = Flask(__name__)
+
+# 遮罩超采样上限（像素数），用于让选区边缘更平滑
+MAX_MASK_PIXELS = 16_000_000
+
+
+def parse_polygons(raw):
+    """解析前端传来的套索选区，返回 [([(x, y), ...], 'add' | 'subtract'), ...]。"""
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(data, list):
+        return []
+
+    polygons = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        points = item.get('points')
+        if not isinstance(points, list) or len(points) < 3:
+            continue
+        try:
+            parsed = [(float(p[0]), float(p[1])) for p in points]
+        except (TypeError, ValueError, IndexError):
+            continue
+        op = 'subtract' if item.get('op') == 'subtract' else 'add'
+        polygons.append((parsed, op))
+    return polygons
+
+
+def build_selection_mask(size, polygons, offset):
+    """生成图片尺寸的选区遮罩（'L' 模式）：255 保留，0 剔除。
+
+    polygons 中的坐标位于底图坐标系，offset 为该图片相对底图的偏移。
+    """
+    width, height = size
+
+    # 自适应超采样倍率，先在高分辨率下绘制再缩小以获得抗锯齿边缘
+    factor = 1
+    while factor < 4 and width * height * (factor + 1) ** 2 <= MAX_MASK_PIXELS:
+        factor += 1
+
+    mask = Image.new('L', (width * factor, height * factor), 0)
+    drawer = ImageDraw.Draw(mask)
+    for points, op in polygons:
+        scaled = [((x - offset[0]) * factor, (y - offset[1]) * factor) for x, y in points]
+        drawer.polygon(scaled, fill=0 if op == 'subtract' else 255)
+
+    if factor > 1:
+        # BOX 即区域平均，缩放后边缘正好是 1 像素的过渡带，且不会像 LANCZOS 那样产生振铃
+        mask = mask.resize((width, height), Image.BOX)
+
+    return mask
+
 
 @app.route('/')
 def index():
@@ -24,6 +81,9 @@ def synthesize():
         body_file = request.files.get('body_image')
         expression_files = request.files.getlist('expression_images')
 
+        # 套索选区（底图坐标），用于裁剪所有表情图片
+        polygons = parse_polygons(request.form.get('polygons'))
+
         if not body_file:
              return jsonify({"status": "error", "message": "未上传人物底图。"}), 400
 
@@ -42,7 +102,12 @@ def synthesize():
             # 读取表情图片
             expr_img = Image.open(expr_file.stream).convert("RGBA")
             expr_filename = os.path.splitext(expr_file.filename)[0]
-            
+
+            # 应用套索选区：只有套中的部分参与合成
+            if polygons:
+                mask = build_selection_mask(expr_img.size, polygons, (offset_x, offset_y))
+                expr_img.putalpha(ImageChops.multiply(expr_img.getchannel("A"), mask))
+
             # 1. 创建一个和底图一样大的全透明图层
             layer = Image.new('RGBA', body_img.size, (0, 0, 0, 0))
             
